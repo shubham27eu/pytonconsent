@@ -269,3 +269,56 @@ class ConsentService:
             db.session.rollback()
             # Log error e
             return None, None, f"Database error while creating consent grant: {str(e)}"
+
+    @staticmethod
+    def get_consent_grant_by_id(consent_id: int):
+        return Consent.query.options(
+            db.joinedload(Consent.consented_fields),
+            db.joinedload(Consent.consent_request).joinedload(ConsentRequest.document), # Include related data for context
+            db.joinedload(Consent.consent_request).joinedload(ConsentRequest.requester),
+            db.joinedload(Consent.approving_owner) # Direct owner link from Consent model
+        ).get(consent_id)
+
+    @staticmethod
+    def list_consent_grants(document_id: int = None, owner_id: int = None, requester_id: int = None, status: ConsentStatus = None):
+        query = Consent.query.join(Consent.consent_request) # Join with ConsentRequest to filter by requester or document
+
+        if document_id is not None:
+            query = query.filter(ConsentRequest.document_id == document_id)
+        if owner_id is not None: # Owner of the consent grant itself
+            query = query.filter(Consent.owner_id == owner_id)
+        if requester_id is not None: # Requester from the original ConsentRequest
+            query = query.filter(ConsentRequest.requester_id == requester_id)
+        if status is not None: # status is a ConsentStatus Enum member
+            query = query.filter(Consent.status == status) # Compare with Enum member directly
+
+        return query.order_by(Consent.granted_at.desc()).all()
+
+    @staticmethod
+    def revoke_consent_grant(consent_id: int, revoking_user_id: int):
+        """
+        Revokes an active consent grant. Usually performed by the document owner.
+        """
+        grant = Consent.query.get(consent_id)
+        if not grant:
+            return None, "Consent grant not found."
+
+        # Check if the revoking user is the owner of the document/consent
+        if grant.owner_id != revoking_user_id:
+            # Potentially, an admin could also revoke, or even requester for their own grants if policy allows
+            return None, "User does not have permission to revoke this consent grant."
+
+        if grant.status != ConsentStatus.ACTIVE:
+            return None, f"Consent grant is not currently active (status: {grant.status.value}). Cannot revoke."
+
+        grant.status = ConsentStatus.REVOKED
+        # grant.valid_until = datetime.now(timezone.utc) # Optionally mark it as ended now
+        db.session.add(grant)
+        try:
+            db.session.commit()
+            from app.services.audit_service import AuditService # Local import to avoid circular if AuditService imports ConsentService
+            AuditService.log_action("CONSENT_REVOKED", user_id=revoking_user_id, target_resource_type="Consent", target_resource_id=consent_id, details={"grant_status_changed_to": grant.status.value})
+            return grant, None
+        except Exception as e:
+            db.session.rollback()
+            return None, f"Database error while revoking consent: {str(e)}"

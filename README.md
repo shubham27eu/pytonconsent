@@ -92,6 +92,17 @@ The project uses Python's built-in `unittest` framework.
 
 ## API Interaction
 
-Interaction with the system is via REST API calls. You can use tools like `curl`, Postman, or custom scripts to interact with the endpoints defined in the `app/api/` modules. Refer to `DESIGN.md` for an overview of planned endpoints.
+Interaction with the system is via REST API calls. You can use tools like `curl`, Postman, or custom scripts to interact with the endpoints defined in the `app/api/` modules.
+
+Key categories of endpoints include:
+*   User Management (`/api/users`)
+*   Document Type Management (`/api/document-types`)
+*   Document Ingestion & Access (`/api/documents`)
+*   Consent Request Workflow (`/api/consent-requests`)
+*   Consent Grant Management (`/api/consents`)
+*   Audit Log Viewing (`/api/audit-logs`)
+*   System Health (`/api/health`)
+
+Refer to `DESIGN.md` for a more detailed overview of API endpoints and example payloads.
 (Example: `GET http://127.0.0.1:5000/api/health` to check if the API is running).
 ```

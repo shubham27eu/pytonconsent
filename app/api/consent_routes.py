@@ -2,7 +2,7 @@ from flask import request, jsonify
 from datetime import timedelta # Import timedelta
 from . import bp  # The API blueprint
 from app.services.consent_service import ConsentService
-from app.models import ConsentRequest, ConsentRequestStatus, RequestedField, User, Document, DocumentType, Consent, ConsentedField # Import Consent, ConsentedField
+from app.models import ConsentRequest, ConsentRequestStatus, RequestedField, User, Document, DocumentType, Consent, ConsentedField, ConsentStatus # Import Consent, ConsentedField, ConsentStatus
 from .document_routes import serialize_document # For embedding document info
 from .document_type_routes import serialize_document_type, serialize_field # For document type info in document
 
@@ -210,3 +210,86 @@ def action_consent_request_route(request_id):
         "consent_grant": serialize_consent_grant(new_grant) if new_grant else None
     }
     return jsonify(response_data), 200
+
+# --- Routes for managing Consent Grants directly ---
+
+@bp.route('/consents/<int:grant_id>', methods=['GET'])
+def get_consent_grant_route(grant_id):
+    # Permission: Requester of original request, or Owner of the document.
+    # This requires getting the grant, then checking its consent_request.requester_id
+    # or consent_request.document.owner_id against the authenticated user.
+    # For now, not implementing this complex permission, assuming admin/direct ID access.
+    grant = ConsentService.get_consent_grant_by_id(grant_id)
+    if not grant:
+        return jsonify({"error": "Consent grant not found"}), 404
+
+    # Enrich serialization if needed, e.g. by adding more document/requester details
+    # The `serialize_consent_grant` helper already includes consented_fields.
+    # We might want to add the full ConsentRequest object or more details from it.
+    serialized_grant = serialize_consent_grant(grant)
+    # Add full consent request to the grant serialization for context
+    if grant.consent_request:
+        serialized_grant['consent_request_details'] = serialize_consent_request(grant.consent_request)
+
+    return jsonify(serialized_grant), 200
+
+
+@bp.route('/consents', methods=['GET'])
+def list_consent_grants_route():
+    # Filters based on ConsentService.list_consent_grants method
+    document_id = request.args.get('document_id', type=int)
+    owner_id = request.args.get('owner_id', type=int) # Owner of the grant (who approved it)
+    requester_id = request.args.get('requester_id', type=int) # Requester from original ConsentRequest
+    status_str = request.args.get('status')
+
+    status_enum = None
+    if status_str:
+        try:
+            status_enum = ConsentStatus[status_str.upper()]
+        except KeyError:
+            valid_statuses = [s.value for s in ConsentStatus]
+            return jsonify({"error": f"Invalid status. Valid statuses are: {valid_statuses}"}), 400
+
+    # Permission considerations:
+    # - If owner_id is passed, it's likely the owner querying their grants.
+    # - If requester_id is passed, it's likely the requester querying grants they received.
+    # - document_id might be used by either.
+    # - Unfiltered list should probably be admin-only.
+    # For now, allow if at least one filter is provided, or it's an admin (not implemented).
+    if not document_id and not owner_id and not requester_id and not status_enum:
+         return jsonify({"error": "At least one filter (document_id, owner_id, requester_id, status) must be provided to list consent grants, or admin privileges required."}), 400
+
+    grants = ConsentService.list_consent_grants(
+        document_id=document_id,
+        owner_id=owner_id,
+        requester_id=requester_id,
+        status=status_enum
+    )
+    return jsonify([serialize_consent_grant(g) for g in grants]), 200
+
+
+@bp.route('/consents/<int:grant_id>/revoke', methods=['POST'])
+def revoke_consent_grant_route(grant_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Invalid JSON payload"}), 400
+
+    revoking_user_id = data.get('revoking_user_id') # ID of user performing revocation (e.g. owner)
+                                                 # In real app, this comes from auth token.
+    if not isinstance(revoking_user_id, int):
+        return jsonify({"error": "revoking_user_id (integer) is required in payload."}), 400
+
+    grant, error = ConsentService.revoke_consent_grant(grant_id, revoking_user_id)
+    if error:
+        if "not found" in error:
+            return jsonify({"error": error}), 404
+        if "permission" in error or "not currently active" in error:
+            return jsonify({"error": error}), 403
+        return jsonify({"error": error}), 400
+
+    # AuditService.log_action("CONSENT_REVOKED", user_id=revoking_user_id, target_resource_type="Consent", target_resource_id=grant_id)
+    # The service method itself should ideally log this. (Added a commented out line there)
+    # For now, let's assume service handles logging or we add it here if service doesn't.
+    # Let's add it to the service as it's a direct action on the consent.
+
+    return jsonify({"message": "Consent grant revoked successfully.", "consent_grant": serialize_consent_grant(grant)}), 200
