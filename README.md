@@ -5,10 +5,11 @@ This project is a Python-based backend system for managing consent for accessing
 ## Features (Initial Scope)
 
 *   **Document Type Management**: Define document schemas with fields classified as `open`, `controlled`, or `closed`.
-*   **Document Ingestion**: Upload (via path reference) documents linked to a defined type.
+*   **PDF Data Extraction**: During ingestion, parses the content of the provided PDF to extract key-value data based on the document type's defined fields.
+*   **Document Ingestion**: Ingests documents, linking them to a defined type and storing both the file reference and the extracted data.
 *   **Consent Request Workflow**: Requesters can ask for access to specific document fields.
 *   **Consent Provisioning**: Owners can approve (fully/partially) or deny consent requests, setting conditions like expiry and access counts.
-*   **Access Enforcement**: The system checks field classifications and consent grants before allowing (placeholder) data access.
+*   **Access Enforcement**: The system checks field classifications and consent grants before returning the real, extracted data for authorized fields.
 *   **Audit Logging**: Basic logging of access attempts and other key actions.
 *   **API-Only Interface**: All interactions are through RESTful API endpoints.
 

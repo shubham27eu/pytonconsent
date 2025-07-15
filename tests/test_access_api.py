@@ -1,9 +1,12 @@
 import unittest
 import json
+import os
 from datetime import datetime, timedelta
 from app import create_app, db
 from app.models import User, DocumentType, DocumentField, FieldClassification, Document, ConsentRequest, ConsentRequestStatus, Consent, ConsentStatus, AuditLog
-from app.services.consent_service import ConsentService # To help set up consents
+from app.services.consent_service import ConsentService
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
 
 class AccessAPITestCase(unittest.TestCase):
     def setUp(self):
@@ -22,30 +25,52 @@ class AccessAPITestCase(unittest.TestCase):
             self.requester_id = self.requester.id
 
             self.doc_type = DocumentType(name="AccessTestDocType", owner_id=self.owner_id)
-            self.field_open = DocumentField(name="OpenField", classification=FieldClassification.OPEN, document_type=self.doc_type)
-            self.field_controlled1 = DocumentField(name="ControlledField1", classification=FieldClassification.CONTROLLED, document_type=self.doc_type)
-            self.field_controlled2 = DocumentField(name="ControlledField2", classification=FieldClassification.CONTROLLED, document_type=self.doc_type)
-            self.field_closed = DocumentField(name="ClosedField", classification=FieldClassification.CLOSED, document_type=self.doc_type)
-            db.session.add_all([self.doc_type, self.field_open, self.field_controlled1, self.field_controlled2, self.field_closed])
+            self.doc_type.fields.append(DocumentField(name="OpenField", classification=FieldClassification.OPEN))
+            self.doc_type.fields.append(DocumentField(name="ControlledField1", classification=FieldClassification.CONTROLLED))
+            self.doc_type.fields.append(DocumentField(name="ControlledField2", classification=FieldClassification.CONTROLLED))
+            self.doc_type.fields.append(DocumentField(name="ClosedField", classification=FieldClassification.CLOSED))
+            db.session.add(self.doc_type)
             db.session.commit()
             self.doc_type_id = self.doc_type.id
 
-            self.document = Document(name="AccessTestDoc", document_type_id=self.doc_type_id, owner_id=self.owner_id, file_path="/path/accesstest.doc")
-            db.session.add(self.document)
-            db.session.commit()
+            # Generate a sample PDF with data to be extracted and accessed
+            self.sample_pdf_path = os.path.join(os.path.dirname(__file__), 'samples', 'access_test.pdf')
+            os.makedirs(os.path.dirname(self.sample_pdf_path), exist_ok=True)
+            c = canvas.Canvas(self.sample_pdf_path, pagesize=letter)
+            c.drawString(50, 750, "OpenField: Public Data")
+            c.drawString(50, 735, "ControlledField1: Secret A")
+            c.drawString(50, 720, "ControlledField2: Secret B")
+            c.drawString(50, 705, "ClosedField: Internal Use Only")
+            c.save()
+
+            # Ingest the document using the service to ensure data is extracted
+            from app.services.document_service import DocumentService
+            self.document, error = DocumentService.ingest_document(
+                name="AccessTestDoc",
+                document_type_id=self.doc_type_id,
+                owner_id=self.owner_id,
+                file_path=self.sample_pdf_path
+            )
+            self.assertIsNone(error)
+            self.assertIsNotNone(self.document)
             self.doc_id = self.document.id
 
-            # Names for easy use
-            self.open_field_name = self.field_open.name
-            self.controlled1_name = self.field_controlled1.name
-            self.controlled2_name = self.field_controlled2.name
-            self.closed_field_name = self.field_closed.name
-
+            # Field names for easy use
+            self.open_field_name = "OpenField"
+            self.controlled1_name = "ControlledField1"
+            self.controlled2_name = "ControlledField2"
+            self.closed_field_name = "ClosedField"
 
     def tearDown(self):
         with self.app.app_context():
             db.session.remove()
             db.drop_all()
+        if os.path.exists(self.sample_pdf_path):
+            os.remove(self.sample_pdf_path)
+        try:
+            os.rmdir(os.path.dirname(self.sample_pdf_path))
+        except OSError:
+            pass
 
     def _make_access_request(self, doc_id, requester_id, field_names):
         payload = {"requester_id": requester_id, "field_names": field_names}
@@ -56,7 +81,7 @@ class AccessAPITestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 200, msg=response.get_data(as_text=True))
         data = response.get_json()['accessed_data']
         self.assertIn(self.open_field_name, data)
-        self.assertEqual(data[self.open_field_name], f"value_placeholder_for_{self.open_field_name}")
+        self.assertEqual(data[self.open_field_name], "Public Data")
 
     def test_access_closed_field_denied(self):
         response = self._make_access_request(self.doc_id, self.requester_id, [self.closed_field_name])
@@ -72,15 +97,14 @@ class AccessAPITestCase(unittest.TestCase):
         response = self._make_access_request(self.doc_id, self.owner_id, [self.open_field_name, self.controlled1_name])
         self.assertEqual(response.status_code, 200)
         data = response.get_json()['accessed_data']
-        self.assertIn(self.open_field_name, data)
-        self.assertIn(self.controlled1_name, data)
+        self.assertEqual(data.get(self.open_field_name), "Public Data")
+        self.assertEqual(data.get(self.controlled1_name), "Secret A")
 
         # Owner CAN access their own closed fields according to current AccessService logic
         response_closed = self._make_access_request(self.doc_id, self.owner_id, [self.closed_field_name])
         self.assertEqual(response_closed.status_code, 200, msg=response_closed.get_data(as_text=True))
         data_closed = response_closed.get_json()['accessed_data']
-        self.assertIn(self.closed_field_name, data_closed)
-        self.assertEqual(data_closed[self.closed_field_name], f"value_placeholder_for_{self.closed_field_name}")
+        self.assertEqual(data_closed.get(self.closed_field_name), "Internal Use Only")
 
     def _setup_valid_consent(self, field_names, access_count=None, valid_until_delta_days=None):
         with self.app.app_context():
@@ -101,7 +125,7 @@ class AccessAPITestCase(unittest.TestCase):
         response = self._make_access_request(self.doc_id, self.requester_id, [self.controlled1_name])
         self.assertEqual(response.status_code, 200)
         data = response.get_json()['accessed_data']
-        self.assertIn(self.controlled1_name, data)
+        self.assertEqual(data.get(self.controlled1_name), "Secret A")
 
     def test_access_controlled_field_consent_expired(self):
         self._setup_valid_consent([self.controlled1_name], valid_until_delta_days=-1) # Expired yesterday

@@ -39,25 +39,18 @@ class Consent(db.Model):
         if self.status != ConsentStatus.ACTIVE:
             return False, f"Consent is not active (status: {self.status.value})"
 
+        # Ensure comparison is between two offset-aware datetimes or two offset-naive datetimes.
+        # Since self.valid_until might be naive from SQLite, and we know it was stored as UTC:
         if self.valid_until:
             aware_valid_until = self.valid_until
-            if self.valid_until.tzinfo is None:
+            if self.valid_until.tzinfo is None: # If naive (e.g. from SQLite)
                 aware_valid_until = self.valid_until.replace(tzinfo=timezone.utc)
 
-            current_utc_time = datetime.now(timezone.utc)
-            print(f"DEBUG_EXPIRY_CHECK: Now_UTC={current_utc_time}, ValidUntil_Aware={aware_valid_until}, Comparison (Now > ValidUntil)={current_utc_time > aware_valid_until}")
-
-            if current_utc_time > aware_valid_until:
+            if datetime.now(timezone.utc) > aware_valid_until:
                 self.status = ConsentStatus.EXPIRED
                 db.session.add(self)
-                return False, "Consent has expired"
-
-        if self.access_count_remaining is not None and self.access_count_remaining <= 0:
-            self.status = ConsentStatus.DEPLETED
-            db.session.add(self)
-            return False, "Access count depleted"
-
-        return True, "Consent is valid for access"
+                # db.session.commit() # Commit should be handled by service layer
+            return False, "Consent has expired"
 
         if self.access_count_remaining is not None and self.access_count_remaining <= 0:
             self.status = ConsentStatus.DEPLETED

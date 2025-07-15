@@ -43,7 +43,8 @@ class AccessService:
                 if field_name not in valid_field_names:
                      AuditService.log_action("FIELD_ACCESS_DENIED", user_id=requester_id, details={"reason": f"Field '{field_name}' not found in document type", "document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
                      return None, f"Field '{field_name}' not found in document type '{document.document_type.name}'."
-                accessed_data[field_name] = f"value_placeholder_for_{field_name}" # Placeholder
+                # Retrieve real data from metadata if available
+                accessed_data[field_name] = document.additional_metadata.get(field_name, None)
             AuditService.log_action("FIELD_ACCESS_GRANTED_OWNER", user_id=requester_id, details={"document_id": document_id, "fields": list(accessed_data.keys())}, target_resource_type="Document", target_resource_id=document_id)
             return accessed_data, None
 
@@ -69,8 +70,8 @@ class AccessService:
                 return None, f"Field '{field_name}' not found in document type '{document.document_type.name}'."
 
             if doc_field.classification == FieldClassification.OPEN:
-                accessed_data[field_name] = f"value_placeholder_for_{field_name}"
-                # Audit log for open field access can be less verbose or conditional
+                # Retrieve real data from metadata for open fields
+                accessed_data[field_name] = document.additional_metadata.get(field_name, None)
                 AuditService.log_action("FIELD_ACCESS_GRANTED_OPEN", user_id=requester_id, details={"document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
                 continue
 
@@ -97,7 +98,8 @@ class AccessService:
                 AuditService.log_action("FIELD_ACCESS_DENIED_GRANT_INVALID", user_id=requester_id, details={"reason": reason, "document_id": document_id, "field": field_name, "grant_id": active_consent_grant.id}, target_resource_type="Document", target_resource_id=document_id)
                 return None, f"Access denied for '{field_name}': {reason}."
 
-            accessed_data[field_name] = f"value_placeholder_for_{field_name}"
+            # Retrieve real data from metadata for controlled fields
+            accessed_data[field_name] = document.additional_metadata.get(field_name, None)
             # Fall through to record access for the grant after checking all requested fields from this grant
 
         # If we reached here for any controlled fields, the grant is valid for them.

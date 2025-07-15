@@ -44,10 +44,10 @@ This document outlines the architectural design for the Consent Management Syste
 ## 3. System Components
 
 *   **API Layer (Flask)**: Exposes RESTful endpoints.
-*   **Service Layer (Business Logic)**: Contains core logic for use cases.
+*   **Service Layer (Business Logic)**: Contains core logic for use cases. This includes a `PDFExtractionService` for parsing document content.
 *   **Data Access Layer (DAL - SQLAlchemy)**: Manages database interactions.
-*   **Database (SQLite for dev, PostgreSQL for prod)**: Stores all persistent data.
-*   **(Conceptual) File Storage**: Represents document content storage (path reference).
+*   **Database (SQLite for dev, PostgreSQL for prod)**: Stores all persistent data, including extracted metadata.
+*   **File Storage**: The system works with local file paths pointing to PDF documents.
 
 ## 4. High-Level Architecture Diagram (Text/PlantUML Style)
 
@@ -96,7 +96,8 @@ end note
 
 *   **User Creation**: `Admin/System -> API (/users) -> UserService -> DAL -> DB`
 *   **Document Type Registration**: `Owner -> API (/document-types) -> DocumentTypeService -> DAL -> DB`
-*   **Access Data**: `Requester -> API (/documents/{id}/access-fields) -> AccessService -> DAL (fetch doc type, fields, consent) -> DB`. Logic within AccessService determines if access is granted. AuditService is called.
+*   **Document Ingestion**: `Owner -> API (/documents) -> DocumentService -> PDFExtractionService -> DAL -> DB`
+*   **Access Data**: `Requester -> API (/documents/{id}/access-fields) -> AccessService -> DAL (fetch doc, metadata, consent) -> DB`. Logic within AccessService determines if access is granted. AuditService is called.
 *   **Revoke Consent**: `Owner -> API (/consents/{id}/revoke) -> ConsentService -> DAL -> DB`. AuditService is called.
 
 ## 6. API Endpoints
@@ -139,7 +140,7 @@ end note
 
 ### Data Access (Enforcement Point)
 *   `POST /api/documents/<int:doc_id}/access-fields`: (Requester) Request to retrieve specific field data.
-    *   Payload: `{"requester_id": ..., "field_names": ["...", ...]}`. Returns placeholder data if allowed.
+    *   Payload: `{"requester_id": ..., "field_names": ["...", ...]}`. Returns extracted data for authorized fields.
 
 ### Audit Logs
 *   `GET /api/audit-logs`: List audit log entries.
@@ -154,5 +155,7 @@ end note
 *   **ORM**: SQLAlchemy
 *   **Database**: SQLite (for development), PostgreSQL (recommended for production)
 *   **Language**: Python
+*   **PDF Parsing**: `pdfplumber` for text extraction.
+*   **Test PDF Generation**: `reportlab` used in test suite.
 *   **API Style**: RESTful JSON
 ```
