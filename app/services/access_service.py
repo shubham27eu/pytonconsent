@@ -51,11 +51,13 @@ class AccessService:
         # --- Regular access check for non-owners ---
         accessed_data = {}
         doc_type_fields_map = {field.name: field for field in document.document_type.fields}
+        consented_field_names_in_grant = set()
+        active_consent_grant = None
 
         # Find an active consent grant for this requester and document
         # This query could be more complex if multiple grants could exist (e.g. pick the one with broadest permissions or latest)
         # For now, assume at most one active relevant grant.
-        active_consent_grant = Consent.query.filter_by(
+        active_consent_grant_query = Consent.query.filter_by(
             owner_id=document.owner_id, # Consent is from the document owner
             status=ConsentStatus.ACTIVE
         ).join(Consent.consent_request).filter(
@@ -63,11 +65,24 @@ class AccessService:
             ConsentRequest.document_id == document_id
         ).options(db.joinedload(Consent.consented_fields)).first() # Ensure consented_fields are loaded
 
+        if active_consent_grant_query:
+            is_valid, reason = active_consent_grant_query.pre_access_check()
+            if is_valid:
+                active_consent_grant = active_consent_grant_query
+                consented_field_names_in_grant = {cf.field_name for cf in active_consent_grant.consented_fields}
+            else:
+                db.session.commit()
+                AuditService.log_action("FIELD_ACCESS_DENIED_GRANT_INVALID", user_id=requester_id, details={"reason": reason, "document_id": document_id, "grant_id": active_consent_grant_query.id}, target_resource_type="Document", target_resource_id=document_id)
+
+
         for field_name in set(field_names): # Use set to avoid duplicates
             doc_field = doc_type_fields_map.get(field_name)
             if not doc_field:
+                # Decide if we should error out or just skip. For now, let's skip silently.
+                # Or, to be more strict:
                 AuditService.log_action("FIELD_ACCESS_DENIED", user_id=requester_id, details={"reason": f"Field '{field_name}' not found in document type", "document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
                 return None, f"Field '{field_name}' not found in document type '{document.document_type.name}'."
+
 
             if doc_field.classification == FieldClassification.OPEN:
                 # Retrieve real data from metadata for open fields
@@ -76,31 +91,19 @@ class AccessService:
                 continue
 
             if doc_field.classification == FieldClassification.CLOSED:
-                AuditService.log_action("FIELD_ACCESS_DENIED_CLOSED", user_id=requester_id, details={"document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
-                return None, f"Access denied: Field '{field_name}' is classified as closed."
+                accessed_data[field_name] = "********"
+                AuditService.log_action("FIELD_ACCESS_MASKED_CLOSED", user_id=requester_id, details={"document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
+                continue
 
             # Field is CONTROLLED, requires consent grant
-            if not active_consent_grant:
-                AuditService.log_action("FIELD_ACCESS_DENIED_NO_GRANT", user_id=requester_id, details={"document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
-                return None, f"Access denied: No active consent grant found for controlled field '{field_name}'."
-
-            # Check if this specific field is in the grant
-            consented_field_names_in_grant = {cf.field_name for cf in active_consent_grant.consented_fields}
-            if field_name not in consented_field_names_in_grant:
-                AuditService.log_action("FIELD_ACCESS_DENIED_NOT_IN_GRANT", user_id=requester_id, details={"document_id": document_id, "field": field_name, "grant_id": active_consent_grant.id}, target_resource_type="Document", target_resource_id=document_id)
-                return None, f"Access denied: Field '{field_name}' is not part of your active consent grant."
-
-            # Perform pre-access checks (expiry, count) for the grant as a whole
-            # This check might be done once per access request rather than per field if all fields share same grant conditions
-            is_valid, reason = active_consent_grant.pre_access_check()
-            if not is_valid:
-                db.session.commit() # Commit status changes from pre_access_check (e.g. EXPIRED)
-                AuditService.log_action("FIELD_ACCESS_DENIED_GRANT_INVALID", user_id=requester_id, details={"reason": reason, "document_id": document_id, "field": field_name, "grant_id": active_consent_grant.id}, target_resource_type="Document", target_resource_id=document_id)
-                return None, f"Access denied for '{field_name}': {reason}."
-
-            # Retrieve real data from metadata for controlled fields
-            accessed_data[field_name] = document.additional_metadata.get(field_name, None)
-            # Fall through to record access for the grant after checking all requested fields from this grant
+            if field_name in consented_field_names_in_grant:
+                # Grant is valid and field is in it.
+                accessed_data[field_name] = document.additional_metadata.get(field_name, None)
+                # Defer audit logging until after we record access
+            else:
+                # No valid consent for this field
+                accessed_data[field_name] = "********"
+                AuditService.log_action("FIELD_ACCESS_MASKED_NO_CONSENT", user_id=requester_id, details={"document_id": document_id, "field": field_name}, target_resource_type="Document", target_resource_id=document_id)
 
         # If we reached here for any controlled fields, the grant is valid for them.
         # Record access attempt against the grant (e.g. decrement count)

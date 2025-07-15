@@ -85,13 +85,15 @@ class AccessAPITestCase(unittest.TestCase):
 
     def test_access_closed_field_denied(self):
         response = self._make_access_request(self.doc_id, self.requester_id, [self.closed_field_name])
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("classified as closed", response.get_json()['error'])
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()['accessed_data']
+        self.assertEqual(data.get(self.closed_field_name), "********")
 
     def test_access_controlled_field_no_consent_denied(self):
         response = self._make_access_request(self.doc_id, self.requester_id, [self.controlled1_name])
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("No active consent grant found", response.get_json()['error'])
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()['accessed_data']
+        self.assertEqual(data.get(self.controlled1_name), "********")
 
     def test_owner_access_own_document(self):
         response = self._make_access_request(self.doc_id, self.owner_id, [self.open_field_name, self.controlled1_name])
@@ -130,8 +132,9 @@ class AccessAPITestCase(unittest.TestCase):
     def test_access_controlled_field_consent_expired(self):
         self._setup_valid_consent([self.controlled1_name], valid_until_delta_days=-1) # Expired yesterday
         response = self._make_access_request(self.doc_id, self.requester_id, [self.controlled1_name])
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("Consent has expired", response.get_json()['error'])
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()['accessed_data']
+        self.assertEqual(data.get(self.controlled1_name), "********")
 
     def test_access_controlled_field_count_depleted(self):
         grant_id = self._setup_valid_consent([self.controlled1_name], access_count=1)
@@ -142,9 +145,10 @@ class AccessAPITestCase(unittest.TestCase):
 
         # Second access (should fail)
         response2 = self._make_access_request(self.doc_id, self.requester_id, [self.controlled1_name])
-        self.assertEqual(response2.status_code, 403, msg=response2.get_data(as_text=True))
-        # After count is depleted, the grant is no longer "ACTIVE", so the primary check for an active grant fails.
-        self.assertIn("No active consent grant found", response2.get_json()['error'])
+        self.assertEqual(response2.status_code, 200)
+        data = response2.get_json()['accessed_data']
+        self.assertEqual(data.get(self.controlled1_name), "********")
+
 
         # Verify grant status in DB
         with self.app.app_context():
@@ -155,20 +159,20 @@ class AccessAPITestCase(unittest.TestCase):
     def test_access_field_not_in_grant(self):
         self._setup_valid_consent([self.controlled1_name]) # Grant only for ControlledField1
         response = self._make_access_request(self.doc_id, self.requester_id, [self.controlled2_name]) # Requesting ControlledField2
-        self.assertEqual(response.status_code, 403)
-        self.assertIn("not part of your active consent grant", response.get_json()['error'])
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()['accessed_data']
+        self.assertEqual(data.get(self.controlled2_name), "********")
 
     def test_access_multiple_fields_mixed_permissions(self):
         self._setup_valid_consent([self.controlled1_name]) # Consent for ControlledField1
 
         # Request OpenField (allowed), ControlledField1 (allowed by grant), ControlledField2 (no grant)
         response = self._make_access_request(self.doc_id, self.requester_id, [self.open_field_name, self.controlled1_name, self.controlled2_name])
-        # This should fail because ControlledField2 is not granted. Access is atomic for the request.
-        self.assertEqual(response.status_code, 403)
-        self.assertIn(f"Field '{self.controlled2_name}' is not part of your active consent grant", response.get_json()['error'])
-
-        # If policy was to return partially accessible data, this test would change.
-        # Current AccessService.can_access_fields is all-or-nothing for the requested set.
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()['accessed_data']
+        self.assertEqual(data.get(self.open_field_name), "Public Data")
+        self.assertEqual(data.get(self.controlled1_name), "Secret A")
+        self.assertEqual(data.get(self.controlled2_name), "********")
 
     def test_audit_log_on_access_attempt(self):
         with self.app.app_context():
@@ -193,7 +197,7 @@ class AccessAPITestCase(unittest.TestCase):
             final_log_count = AuditLog.query.count()
             self.assertGreater(final_log_count, initial_log_count)
             latest_log = AuditLog.query.order_by(AuditLog.timestamp.desc()).first()
-            self.assertEqual(latest_log.action, "FIELD_ACCESS_DENIED_CLOSED")
+            self.assertEqual(latest_log.action, "FIELD_ACCESS_MASKED_CLOSED")
 
 
 if __name__ == '__main__':

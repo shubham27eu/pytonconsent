@@ -104,8 +104,6 @@ def access_document_fields_route(doc_id):
         # Determine appropriate status code based on error message content
         if "not found" in error.lower():
             status_code = 404
-        elif "access denied" in error.lower() or "no active consent grant" in error.lower() or "not part of your active consent grant" in error.lower() or "classified as closed" in error.lower():
-            status_code = 403 # Forbidden
         else:
             status_code = 400 # Bad request (e.g. validation error)
         return jsonify({"error": error, "accessed_data": None}), status_code
@@ -114,4 +112,4 @@ def access_document_fields_route(doc_id):
         return jsonify({"error": "No fields were accessible.", "accessed_data": None}), 403
 
 
-    return jsonify({"message": "Access granted for requested fields.", "accessed_data": accessed_data}), 200
+    return jsonify({"message": "Access request processed.", "accessed_data": accessed_data}), 200
